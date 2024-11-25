@@ -1,5 +1,7 @@
 package de.coolepizza.craftattack.listener;
 
+package dev.larrox.blocktopiaSpawn.events;
+
 import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.chat.ComponentBuilder;
 import net.md_5.bungee.api.chat.KeybindComponent;
@@ -13,14 +15,14 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityToggleGlideEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.event.player.PlayerToggleFlightEvent;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitRunnable;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class SpawnBoostListener extends BukkitRunnable implements Listener {
 
@@ -29,23 +31,34 @@ public class SpawnBoostListener extends BukkitRunnable implements Listener {
     private final int spawnRadius;
     private final boolean boostEnabled;
     private final World world;
-    private final List<Player> flying = new ArrayList<>();
-    private final List<Player> boosted = new ArrayList<>();
+    private final List<Player> flying;
+    private final List<Player> boosted;
     private final String message;
 
     public static SpawnBoostListener create(Plugin plugin) {
         var config = plugin.getConfig();
-        if (!config.contains("multiplyValue") || !config.contains("spawnRadius") || !config.contains("boostEnabled") || !config.contains("world") ||  !config.contains("message")) {
+
+        if (!config.contains("multiplyValue") || !config.contains("spawnRadius")
+                || !config.contains("boostEnabled") || !config.contains("world")
+                || !config.contains("message")) {
             plugin.saveResource("config.yml", true);
             plugin.reloadConfig();
         }
+
+        String worldName = config.getString("world");
+        World world = Bukkit.getWorld(worldName);
+
+        if (world == null) {
+            plugin.getLogger().warning("The specified world '" + worldName + "' does not exist or is not loaded yet. Plugin will retry later.");
+            return null;
+        }
+
         return new SpawnBoostListener(
                 plugin,
                 config.getInt("multiplyValue"),
                 config.getInt("spawnRadius"),
                 config.getBoolean("boostEnabled"),
-                Objects.requireNonNull(Bukkit.getWorld(config.getString("world"))
-                        , "Invalid world " + config.getString("world")),
+                world,
                 config.getString("message"));
     }
 
@@ -56,6 +69,8 @@ public class SpawnBoostListener extends BukkitRunnable implements Listener {
         this.boostEnabled = boostEnabled;
         this.world = world;
         this.message = message;
+        this.flying = new CopyOnWriteArrayList<>();
+        this.boosted = new CopyOnWriteArrayList<>();
 
         this.runTaskTimer(this.plugin, 0, 3);
     }
@@ -63,33 +78,44 @@ public class SpawnBoostListener extends BukkitRunnable implements Listener {
     @Override
     public void run() {
         world.getPlayers().forEach(player -> {
-            if (!isInSpawnRadius(player)) return;
-            if (player.getGameMode() != GameMode.SURVIVAL && player.getGameMode() != GameMode.ADVENTURE) return;
-            player.setAllowFlight(isInSpawnRadius(player));
+            if (player.getGameMode() != GameMode.SURVIVAL && player.getGameMode() != GameMode.ADVENTURE) {
+                return;
+            }
+
+            if (isInSpawnRadius(player)) {
+                player.setAllowFlight(true);
+            }
+
             if (flying.contains(player) && !player.getLocation().getBlock().getRelative(BlockFace.DOWN).getType().isAir()) {
                 player.setAllowFlight(false);
+                player.setFlying(false);
                 player.setGliding(false);
+
                 boosted.remove(player);
-                Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                    flying.remove(player);
-                }, 5);
+
+                Bukkit.getScheduler().runTaskLater(plugin, () -> flying.remove(player), 5);
             }
         });
     }
 
+
     @EventHandler
     public void onDoubleJump(PlayerToggleFlightEvent event) {
-        if (event.getPlayer().getGameMode() != GameMode.SURVIVAL && event.getPlayer().getGameMode() != GameMode.ADVENTURE) return;
-        if (!isInSpawnRadius(event.getPlayer())) return;
+        Player player = event.getPlayer();
+        if ((player.getGameMode() != GameMode.SURVIVAL && player.getGameMode() != GameMode.ADVENTURE) || !isInSpawnRadius(player))
+            return;
+
         event.setCancelled(true);
-        event.getPlayer().setGliding(true);
-        flying.add(event.getPlayer());
+        player.setGliding(true);
+        flying.add(player);
+
         if (!boostEnabled) return;
+
         String[] messageParts = message.split("%key%");
-        event.getPlayer().spigot().sendMessage(ChatMessageType.ACTION_BAR,
+        player.spigot().sendMessage(ChatMessageType.ACTION_BAR,
                 new ComponentBuilder(messageParts[0])
                         .append(new KeybindComponent("key.swapOffhand"))
-                        .append(messageParts[1])
+                        .append(messageParts.length > 1 ? messageParts[1] : "")
                         .create());
     }
 
@@ -97,25 +123,34 @@ public class SpawnBoostListener extends BukkitRunnable implements Listener {
     public void onDamage(EntityDamageEvent event) {
         if (event.getEntityType() == EntityType.PLAYER
                 && (event.getCause() == EntityDamageEvent.DamageCause.FALL
-                || event.getCause() == EntityDamageEvent.DamageCause.FLY_INTO_WALL)
-                && flying.contains(event.getEntity())) event.setCancelled(true);
+                || event.getCause() == EntityDamageEvent.DamageCause.FLY_INTO_WALL)) {
+            if (flying.contains(event.getEntity())) {
+                event.setCancelled(true);
+            }
+        }
     }
 
     @EventHandler
     public void onSwapItem(PlayerSwapHandItemsEvent event) {
-        if (!boostEnabled || !flying.contains(event.getPlayer()) || boosted.contains(event.getPlayer())) return;
+        Player player = event.getPlayer();
+        if (!boostEnabled || !flying.contains(player) || boosted.contains(player))
+            return;
+
         event.setCancelled(true);
-        boosted.add(event.getPlayer());
-        event.getPlayer().setVelocity(event.getPlayer().getLocation().getDirection().multiply(multiplyValue));
+        boosted.add(player);
+        player.setVelocity(player.getLocation().getDirection().multiply(multiplyValue));
     }
 
     @EventHandler
     public void onToggleGlide(EntityToggleGlideEvent event) {
-        if (event.getEntityType() == EntityType.PLAYER && flying.contains(event.getEntity())) event.setCancelled(true);
+        if (event.getEntityType() == EntityType.PLAYER && flying.contains(event.getEntity())) {
+            event.setCancelled(true);
+        }
     }
 
     private boolean isInSpawnRadius(Player player) {
-        if (!player.getWorld().equals(world)) return false;
-        return world.getSpawnLocation().distance(player.getLocation()) <= spawnRadius;
+        return player.getWorld().equals(world)
+                && world.getSpawnLocation().distance(player.getLocation()) <= spawnRadius;
     }
+
 }
