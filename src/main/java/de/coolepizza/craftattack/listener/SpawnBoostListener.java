@@ -60,10 +60,10 @@ public class SpawnBoostListener extends BukkitRunnable implements Listener {
         this.runTaskTimer(this.plugin, 0, 3);
     }
 
-
     @Override
     public void run() {
         world.getPlayers().forEach(player -> {
+            if (!isInSpawnRadius(player)) return;
             if (player.getGameMode() != GameMode.SURVIVAL && player.getGameMode() != GameMode.ADVENTURE) return;
             player.setAllowFlight(isInSpawnRadius(player));
             if (flying.contains(player) && !player.getLocation().getBlock().getRelative(BlockFace.DOWN).getType().isAir()) {
@@ -76,7 +76,6 @@ public class SpawnBoostListener extends BukkitRunnable implements Listener {
             }
         });
     }
-
 
     @EventHandler
     public void onDoubleJump(PlayerToggleFlightEvent event) {
@@ -101,7 +100,6 @@ public class SpawnBoostListener extends BukkitRunnable implements Listener {
                 || event.getCause() == EntityDamageEvent.DamageCause.FLY_INTO_WALL)
                 && flying.contains(event.getEntity())) event.setCancelled(true);
     }
-
 
     @EventHandler
     public void onSwapItem(PlayerSwapHandItemsEvent event) {
